@@ -32,7 +32,7 @@ headers = {
 
 
 def get_proxies():
-  proxy_url = os.environ.get("PROXY_URL")
+  proxy_url = os.environ.get("PROXY_URL", "").strip()
   if proxy_url:
     return {
         "http": proxy_url,
