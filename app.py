@@ -212,7 +212,7 @@ def ask():
         json=payload,
         headers=req_headers,
         stream=True,
-        proxies=get_proxies(),
+        proxies=proxy,
         timeout=30,
     )
 
