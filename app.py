@@ -2,9 +2,9 @@ import json
 import re
 import uuid
 import os
-import requests
 import urllib3
 
+from curl_cffi import requests
 from flask import Flask, jsonify, request
 
 app = Flask(__name__)
@@ -21,7 +21,7 @@ UPSTREAM_URL = (
     "https://www.perplexity.ai/rest/sse/perplexity_ask"
 )
 
-session_context_uuid = str(uuid.uuid4())
+SESSION_CONTEXT_UUID = str(uuid.uuid4())
 
 LAST_BACKEND_UUID = None
 READ_WRITE_TOKEN = None
@@ -80,16 +80,14 @@ def update_headers():
 
     global headers
 
-    data = request.get_json(
-        silent=True
-    ) or {}
+    data = request.get_json(silent=True) or {}
 
     if not isinstance(data, dict):
-
         return jsonify({
-            "error":
+            "error": (
                 "Invalid payload format, "
                 "expected JSON object"
+            )
         }), 400
 
     updated_count = 0
@@ -102,7 +100,6 @@ def update_headers():
         if not is_valid_header_key(clean_k):
             continue
 
-        # requests generates these itself.
         if clean_k.lower() in {
             "host",
             "content-length",
@@ -111,7 +108,6 @@ def update_headers():
             continue
 
         headers[clean_k] = clean_v
-
         updated_count += 1
 
     return jsonify({
@@ -129,16 +125,14 @@ def update_cookies():
 
     global headers
 
-    data = request.get_json(
-        silent=True
-    ) or {}
+    data = request.get_json(silent=True) or {}
 
     if not isinstance(data, dict):
-
         return jsonify({
-            "error":
+            "error": (
                 "Invalid payload format, "
                 "expected JSON object"
+            )
         }), 400
 
     cookie_items = []
@@ -153,14 +147,9 @@ def update_cookies():
                 f"{key}={value}"
             )
 
-    cookie_string = "; ".join(
-        cookie_items
-    )
+    cookie_string = "; ".join(cookie_items)
 
-    # Keep exactly one canonical Cookie header.
     headers["Cookie"] = cookie_string
-
-    # Remove accidental lowercase duplicate.
     headers.pop("cookie", None)
 
     return jsonify({
@@ -232,15 +221,11 @@ def extract_final_text(data_obj):
 
     if isinstance(data_obj, dict):
 
-        # Prefer an actual markdown answer.
         markdown_block = data_obj.get(
             "markdown_block"
         )
 
-        if isinstance(
-            markdown_block,
-            dict
-        ):
+        if isinstance(markdown_block, dict):
 
             answer = markdown_block.get(
                 "answer"
@@ -252,7 +237,6 @@ def extract_final_text(data_obj):
             ):
                 return answer
 
-        # Generic fallback.
         for key in (
             "answer",
             "text",
@@ -269,9 +253,7 @@ def extract_final_text(data_obj):
 
         for value in data_obj.values():
 
-            result = extract_final_text(
-                value
-            )
+            result = extract_final_text(value)
 
             if result:
                 return result
@@ -280,9 +262,7 @@ def extract_final_text(data_obj):
 
         for item in data_obj:
 
-            result = extract_final_text(
-                item
-            )
+            result = extract_final_text(item)
 
             if result:
                 return result
@@ -291,7 +271,7 @@ def extract_final_text(data_obj):
 
 
 # ============================================================
-# SEND MESSAGE TO PERPLEXITY
+# SEND MESSAGE
 # ============================================================
 
 def send_message(user_text):
@@ -300,17 +280,15 @@ def send_message(user_text):
     global READ_WRITE_TOKEN
     global FRONTEND_CONTEXT_UUID
 
-    frontend_uuid = str(
-        uuid.uuid4()
-    )
+    frontend_uuid = str(uuid.uuid4())
 
     is_followup = (
         READ_WRITE_TOKEN is not None
     )
 
-    # --------------------------------------------------------
+    # ========================================================
     # PARAMETERS
-    # --------------------------------------------------------
+    # ========================================================
 
     params = {
         "attachments": [],
@@ -347,15 +325,17 @@ def send_message(user_text):
         "dsl_query": user_text,
         "skip_search_enabled": False,
         "source": "mweb",
+
         "client_search_results_cache_key":
             frontend_uuid,
+
         "version": "2.18",
         "followup_source": "link",
     }
 
-    # --------------------------------------------------------
+    # ========================================================
     # SESSION / FOLLOW-UP
-    # --------------------------------------------------------
+    # ========================================================
 
     if is_followup:
 
@@ -376,7 +356,7 @@ def send_message(user_text):
     else:
 
         params["frontend_context_uuid"] = (
-            session_context_uuid
+            SESSION_CONTEXT_UUID
         )
 
     payload = {
@@ -384,9 +364,9 @@ def send_message(user_text):
         "query_str": user_text,
     }
 
-    # --------------------------------------------------------
+    # ========================================================
     # REQUEST HEADERS
-    # --------------------------------------------------------
+    # ========================================================
 
     req_headers = {}
 
@@ -403,9 +383,7 @@ def send_message(user_text):
 
         req_headers[key] = value
 
-    req_headers["x-request-id"] = (
-        frontend_uuid
-    )
+    req_headers["x-request-id"] = frontend_uuid
 
     if is_followup and LAST_BACKEND_UUID:
 
@@ -414,12 +392,22 @@ def send_message(user_text):
             + LAST_BACKEND_UUID
         )
 
-    # --------------------------------------------------------
-    # DEBUG INFORMATION
-    # --------------------------------------------------------
+    # ========================================================
+    # DEBUG
+    # ========================================================
 
     print(
-        "[UPSTREAM] Sending request to Perplexity",
+        "[UPSTREAM] Sending request",
+        flush=True
+    )
+
+    print(
+        "[UPSTREAM] Client: curl_cffi",
+        flush=True
+    )
+
+    print(
+        "[UPSTREAM] Impersonation: chrome",
         flush=True
     )
 
@@ -435,22 +423,32 @@ def send_message(user_text):
         flush=True
     )
 
-    # --------------------------------------------------------
-    # UPSTREAM REQUEST
-    # --------------------------------------------------------
+    # ========================================================
+    # CURL_CFFI REQUEST
+    # ========================================================
 
     try:
 
         response = requests.post(
             UPSTREAM_URL,
-            data=json.dumps(payload),
+
+            data=json.dumps(
+                payload,
+                separators=(",", ":")
+            ),
+
             headers=req_headers,
+
             stream=True,
+
             timeout=90,
+
+            impersonate="chrome",
+
             verify=False,
         )
 
-    except requests.RequestException as exc:
+    except Exception as exc:
 
         print(
             "[UPSTREAM] Request failed:",
@@ -461,9 +459,14 @@ def send_message(user_text):
         return None, {
             "error":
                 "Could not connect to upstream.",
+
             "exception":
                 str(exc),
         }, 502
+
+    # ========================================================
+    # RESPONSE INFORMATION
+    # ========================================================
 
     print(
         "[UPSTREAM] Status:",
@@ -495,10 +498,9 @@ def send_message(user_text):
         flush=True
     )
 
-    # --------------------------------------------------------
-    # IMPORTANT:
-    # RETURN THE ACTUAL UPSTREAM ERROR
-    # --------------------------------------------------------
+    # ========================================================
+    # UPSTREAM ERROR
+    # ========================================================
 
     if response.status_code != 200:
 
@@ -541,9 +543,9 @@ def send_message(user_text):
 
         }, 502
 
-    # --------------------------------------------------------
+    # ========================================================
     # SSE PARSING
-    # --------------------------------------------------------
+    # ========================================================
 
     final_reply = ""
 
@@ -554,10 +556,7 @@ def send_message(user_text):
             if not line:
                 continue
 
-            if isinstance(
-                line,
-                bytes
-            ):
+            if isinstance(line, bytes):
 
                 decoded = line.decode(
                     "utf-8",
@@ -587,6 +586,7 @@ def send_message(user_text):
                 )
 
             except json.JSONDecodeError:
+
                 continue
 
             capture_state(data)
@@ -610,18 +610,21 @@ def send_message(user_text):
             ):
                 break
 
-    except requests.RequestException as exc:
+    except Exception as exc:
 
         return None, {
+
             "error":
                 "SSE stream failed.",
+
             "exception":
                 str(exc),
+
         }, 502
 
-    # --------------------------------------------------------
+    # ========================================================
     # FINAL RESPONSE
-    # --------------------------------------------------------
+    # ========================================================
 
     if final_reply:
 
@@ -643,7 +646,7 @@ def send_message(user_text):
 
 
 # ============================================================
-# ASK ENDPOINT
+# ASK
 # ============================================================
 
 @app.route(
@@ -705,10 +708,13 @@ def ask():
         )
 
         return jsonify({
+
             "error":
                 "Stream failure",
+
             "exception":
                 str(exc),
+
         }), 500
 
 
@@ -729,6 +735,9 @@ def home():
 
         "message":
             "Render Perplexity API is operational.",
+
+        "client":
+            "curl_cffi",
 
         "endpoints": {
 
@@ -760,7 +769,7 @@ def home():
 
 
 # ============================================================
-# RENDER ENTRYPOINT
+# LOCAL ENTRYPOINT
 # ============================================================
 
 if __name__ == "__main__":
