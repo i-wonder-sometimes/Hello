@@ -2,7 +2,7 @@ import json
 import os
 import re
 import uuid
-from flask import Flask, jsonify, request, Response
+from flask import Flask, jsonify, request
 import requests
 
 app = Flask(__name__)
@@ -29,6 +29,16 @@ headers = {
     'accept-language': "en-US,en;q=0.9",
     'Cookie': "",
 }
+
+
+def get_proxies():
+  proxy_url = os.environ.get("PROXY_URL")
+  if proxy_url:
+    return {
+        "http": proxy_url,
+        "https": proxy_url,
+    }
+  return None
 
 
 def is_valid_header_key(key):
@@ -75,6 +85,20 @@ def extract_final_text(data_obj):
       if res:
         return res
   return None
+
+
+@app.route("/", methods=["GET"])
+def home():
+  return jsonify({
+      "status": "online",
+      "proxy_configured": os.environ.get("PROXY_URL") is not None,
+      "message": "Render Perplexity API is operational.",
+      "endpoints": {
+          "POST /ask": "Send prompt payload: {'prompt': 'your question'}",
+          "POST /headers": "Update active request headers",
+          "POST /cookies": "Update active request cookies",
+      },
+  })
 
 
 @app.route("/headers", methods=["POST"])
@@ -184,7 +208,12 @@ def ask():
 
   try:
     response = requests.post(
-        url, json=payload, headers=req_headers, stream=True
+        url,
+        json=payload,
+        headers=req_headers,
+        stream=True,
+        proxies=get_proxies(),
+        timeout=30,
     )
 
     if response.status_code != 200:
