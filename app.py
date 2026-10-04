@@ -319,12 +319,19 @@ def send_message(user_text):
 
     if response.status_code != 200:
 
-        return None, {
-            "error": (
-                f"Bad server response "
-                f"({response.status_code})"
-            )
-        }, 502
+        if response.status_code != 200:
+    try:
+        upstream_body = response.text[:3000]
+    except Exception:
+        upstream_body = ""
+
+    return None, {
+        "error": f"Bad server response ({response.status_code})",
+        "upstream_status": response.status_code,
+        "upstream_content_type": response.headers.get("content-type"),
+        "upstream_server": response.headers.get("server"),
+        "upstream_body": upstream_body,
+    }, 502
 
     # --------------------------------------------------------
     # SAME SSE PARSING
