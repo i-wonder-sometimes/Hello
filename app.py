@@ -2,59 +2,155 @@ import json
 import os
 import re
 import uuid
+import requests
 
 from flask import Flask, jsonify, request
-import requests
+
+
+# ============================================================
+# FLASK
+# ============================================================
 
 app = Flask(__name__)
 
-URL = "https://www.perplexity.ai/rest/sse/perplexity_ask"
+
+# ============================================================
+# ORIGINAL SETTINGS
+# ============================================================
+
+url = "https://www.perplexity.ai/rest/sse/perplexity_ask"
 
 session_context_uuid = str(uuid.uuid4())
 
-# Conversation state
+
+# ---- memory state ----
 LAST_BACKEND_UUID = None
 READ_WRITE_TOKEN = None
 FRONTEND_CONTEXT_UUID = None
 
+
 headers = {
-    "User-Agent": (
-        "Mozilla/5.0 (Linux; Android 10; K) "
-        "AppleWebKit/537.36 (KHTML, like Gecko) "
-        "Chrome/154.0.0.0 Mobile Safari/537.36"
+    'User-Agent': (
+        "Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 (KHTML, like"
+        " Gecko) Chrome/154.0.0.0 Mobile Safari/537.36"
     ),
-    "Accept": "text/event-stream",
-    "Accept-Encoding": "gzip, deflate, br, zstd",
-    "Content-Type": "application/json",
-    "pragma": "no-cache",
-    "cache-control": "no-cache",
-    "origin": "https://www.perplexity.ai",
-    "referer": "https://www.perplexity.ai/",
-    "accept-language": "en-US,en;q=0.9",
-    "Cookie": "",
+    'Accept': "text/event-stream",
+    'Accept-Encoding': "gzip, deflate, br, zstd",
+    'Content-Type': "application/json",
+    'pragma': "no-cache",
+    'cache-control': "no-cache",
+    'origin': "https://www.perplexity.ai",
+    'referer': "https://www.perplexity.ai/",
+    'accept-language': "en-US,en;q=0.9",
+    'Cookie': "",
 }
 
 
-def is_valid_header_key(key):
-    key = str(key).strip()
-
-    if not key or key.startswith(":"):
-        return False
-
-    return bool(re.match(r"^[a-zA-Z0-9\-_]+$", key))
-
+# ============================================================
+# PROXY
+# ============================================================
 
 def get_proxies():
     proxy_url = os.environ.get("PROXY_URL", "").strip()
 
-    if not proxy_url:
-        return None
+    if proxy_url:
+        return {
+            "http": proxy_url,
+            "https": proxy_url,
+        }
+
+    return None
+
+
+# ============================================================
+# HEADER VALIDATION
+# ============================================================
+
+def is_valid_header_key(key):
+    # Keep the exact behavior from the original script.
+    #
+    # HTTP/2 pseudo headers such as:
+    # :method
+    # :authority
+    # :path
+    # :scheme
+    #
+    # are intentionally rejected because requests generates
+    # those itself.
+
+    key_str = str(key).strip()
+
+    if not key_str or key_str.startswith(":"):
+        return False
+
+    return bool(re.match(r"^[a-zA-Z0-9\-_]+$", key_str))
+
+
+# ============================================================
+# UPDATE HEADERS
+# ============================================================
+
+def update_headers(data):
+    global headers
+
+    if not data or not isinstance(data, dict):
+        return {
+            "error": "Invalid payload format, expected JSON object"
+        }
+
+    valid_items = []
+
+    for k, v in data.items():
+
+        clean_k = str(k).strip()
+        clean_v = str(v).strip()
+
+        if is_valid_header_key(clean_k):
+            valid_items.append((clean_k, clean_v))
+
+    updated_count = 0
+
+    for key, value in valid_items:
+        headers[key] = value
+        updated_count += 1
 
     return {
-        "http": proxy_url,
-        "https": proxy_url,
+        "message": f"Updated {updated_count} headers successfully."
     }
 
+
+# ============================================================
+# UPDATE COOKIES
+# ============================================================
+
+def update_cookies(data):
+    global headers
+
+    if not data or not isinstance(data, dict):
+        return {
+            "error": "Invalid payload format, expected JSON object"
+        }
+
+    items = [
+        (str(k).strip(), str(v).strip())
+        for k, v in data.items()
+    ]
+
+    cookie_str = "; ".join(
+        [f"{k}={v}" for k, v in items]
+    )
+
+    headers["Cookie"] = cookie_str
+    headers["cookie"] = cookie_str
+
+    return {
+        "message": "Cookies updated successfully."
+    }
+
+
+# ============================================================
+# STATE CAPTURE
+# ============================================================
 
 def capture_state(data_obj):
     global LAST_BACKEND_UUID
@@ -63,23 +159,23 @@ def capture_state(data_obj):
 
     if isinstance(data_obj, dict):
 
-        backend = data_obj.get("backend_uuid")
+        bu = data_obj.get("backend_uuid")
 
-        if isinstance(backend, str) and backend:
-            LAST_BACKEND_UUID = backend
+        if isinstance(bu, str) and bu:
+            LAST_BACKEND_UUID = bu
 
-        token = data_obj.get("read_write_token")
+        rwt = data_obj.get("read_write_token")
 
-        if isinstance(token, str) and token:
-            READ_WRITE_TOKEN = token
+        if isinstance(rwt, str) and rwt:
+            READ_WRITE_TOKEN = rwt
 
-        context = data_obj.get("frontend_context_uuid")
+        fcu = data_obj.get("frontend_context_uuid")
 
-        if isinstance(context, str) and context:
-            FRONTEND_CONTEXT_UUID = context
+        if isinstance(fcu, str) and fcu:
+            FRONTEND_CONTEXT_UUID = fcu
 
-        for value in data_obj.values():
-            capture_state(value)
+        for v in data_obj.values():
+            capture_state(v)
 
     elif isinstance(data_obj, list):
 
@@ -87,46 +183,45 @@ def capture_state(data_obj):
             capture_state(item)
 
 
+# ============================================================
+# RESPONSE EXTRACTION
+# ============================================================
+
 def extract_final_text(data_obj):
 
     if isinstance(data_obj, dict):
 
-        if "text" in data_obj:
-            value = data_obj["text"]
+        if "text" in data_obj and isinstance(data_obj["text"], str):
+            return data_obj["text"]
 
-            if isinstance(value, str):
-                return value
+        if "answer" in data_obj and isinstance(data_obj["answer"], str):
+            return data_obj["answer"]
 
-        if "answer" in data_obj:
-            value = data_obj["answer"]
+        if "snippet" in data_obj and isinstance(data_obj["snippet"], str):
+            return data_obj["snippet"]
 
-            if isinstance(value, str):
-                return value
+        for v in data_obj.values():
 
-        if "snippet" in data_obj:
-            value = data_obj["snippet"]
+            res = extract_final_text(v)
 
-            if isinstance(value, str):
-                return value
-
-        for value in data_obj.values():
-
-            result = extract_final_text(value)
-
-            if result:
-                return result
+            if res:
+                return res
 
     elif isinstance(data_obj, list):
 
         for item in data_obj:
 
-            result = extract_final_text(item)
+            res = extract_final_text(item)
 
-            if result:
-                return result
+            if res:
+                return res
 
     return None
 
+
+# ============================================================
+# ORIGINAL SEND MESSAGE LOGIC
+# ============================================================
 
 def send_message(user_text):
 
@@ -137,6 +232,11 @@ def send_message(user_text):
     frontend_uuid = str(uuid.uuid4())
 
     is_followup = READ_WRITE_TOKEN is not None
+
+
+    # --------------------------------------------------------
+    # EXACT ORIGINAL PARAMS
+    # --------------------------------------------------------
 
     params = {
         "attachments": [],
@@ -172,6 +272,11 @@ def send_message(user_text):
         "followup_source": "link",
     }
 
+
+    # --------------------------------------------------------
+    # ORIGINAL FOLLOW-UP STATE
+    # --------------------------------------------------------
+
     if is_followup:
 
         params["last_backend_uuid"] = LAST_BACKEND_UUID
@@ -184,18 +289,33 @@ def send_message(user_text):
 
         params["frontend_context_uuid"] = session_context_uuid
 
+
+    # --------------------------------------------------------
+    # ORIGINAL PAYLOAD
+    # --------------------------------------------------------
+
     payload = {
         "params": params,
         "query_str": user_text,
     }
 
+
+    # --------------------------------------------------------
+    # ORIGINAL HEADER CLEANING
+    # --------------------------------------------------------
+
     req_headers = {
-        key: value
-        for key, value in headers.copy().items()
-        if is_valid_header_key(key)
+        k: v
+        for k, v in headers.copy().items()
+        if is_valid_header_key(k)
     }
 
     req_headers["x-request-id"] = frontend_uuid
+
+
+    # --------------------------------------------------------
+    # ORIGINAL FOLLOW-UP REFERER
+    # --------------------------------------------------------
 
     if is_followup and LAST_BACKEND_UUID:
 
@@ -203,112 +323,227 @@ def send_message(user_text):
             f"https://www.perplexity.ai/search/{LAST_BACKEND_UUID}"
         )
 
-    response = requests.post(
-        URL,
-        json=payload,
-        headers=req_headers,
-        stream=True,
-        proxies=get_proxies(),
-        timeout=60,
-        verify=False,
-    )
 
-    if response.status_code != 200:
+    # --------------------------------------------------------
+    # ORIGINAL REQUEST
+    # --------------------------------------------------------
 
-        raise RuntimeError(
-            f"Perplexity returned HTTP {response.status_code}"
+    try:
+
+        response = requests.post(
+            url,
+            data=json.dumps(payload),
+            headers=req_headers,
+            stream=True,
+            proxies=get_proxies(),
+            timeout=60,
         )
 
-    final_reply = ""
 
-    for line in response.iter_lines():
+        # ----------------------------------------------------
+        # STATUS
+        # ----------------------------------------------------
 
-        if not line:
-            continue
+        if response.status_code != 200:
 
-        if isinstance(line, bytes):
-            decoded = line.decode("utf-8", errors="ignore")
-        else:
-            decoded = line
+            return {
+                "ok": False,
+                "error": (
+                    f"Bad server response "
+                    f"({response.status_code})."
+                ),
+                "status_code": response.status_code,
+            }
 
-        if not decoded.startswith("data:"):
-            continue
 
-        raw_data = decoded[5:].strip()
+        # ----------------------------------------------------
+        # ORIGINAL SSE PARSING
+        # ----------------------------------------------------
 
-        try:
+        final_reply = ""
 
-            data = json.loads(raw_data)
+        for line in response.iter_lines():
 
-            capture_state(data)
+            if not line:
+                continue
 
-            extracted = extract_final_text(data)
+            if isinstance(line, bytes):
 
-            if extracted:
+                decoded = line.decode(
+                    "utf-8",
+                    errors="ignore"
+                )
 
-                extracted = extracted.strip()
+            else:
 
-                if len(extracted) > len(final_reply):
-                    final_reply = extracted
+                decoded = line
 
-        except (json.JSONDecodeError, TypeError):
-            continue
 
-    if not final_reply:
-        raise RuntimeError(
-            "No valid response returned from Perplexity."
-        )
+            if decoded.startswith("data: "):
 
-    return re.sub(r"\s+", " ", final_reply).strip()
+                raw_data = decoded[6:].strip()
 
+                try:
+
+                    data = json.loads(raw_data)
+
+                    capture_state(data)
+
+                    extracted = extract_final_text(data)
+
+                    if (
+                        extracted
+                        and len(extracted.strip())
+                        > len(final_reply)
+                    ):
+                        final_reply = extracted.strip()
+
+                except json.JSONDecodeError:
+
+                    pass
+
+
+        # ----------------------------------------------------
+        # ORIGINAL FINAL CLEANING
+        # ----------------------------------------------------
+
+        if final_reply:
+
+            clean_reply = re.sub(
+                r"\s+",
+                " ",
+                final_reply
+            ).strip()
+
+            return {
+                "ok": True,
+                "response": clean_reply,
+            }
+
+
+        return {
+            "ok": False,
+            "error": "No valid response returned.",
+        }
+
+
+    except Exception as e:
+
+        return {
+            "ok": False,
+            "error": f"Stream failure: {str(e)}",
+        }
+
+
+# ============================================================
+# HOME
+# ============================================================
 
 @app.route("/", methods=["GET"])
 def home():
 
     return jsonify({
         "status": "online",
-        "service": "MaskAi",
+        "service": "Perplexity API",
         "endpoints": {
-            "POST /ask": "Send a message"
-        }
+            "POST /ask": "Send a prompt",
+            "POST /headers": "Update request headers",
+            "POST /cookies": "Update request cookies",
+        },
     })
 
+
+# ============================================================
+# ASK
+# ============================================================
 
 @app.route("/ask", methods=["POST"])
 def ask():
 
-    data = request.get_json(silent=True)
+    data = request.get_json(silent=True) or {}
 
-    if not isinstance(data, dict):
+    user_text = data.get("prompt", "")
+
+    if not isinstance(user_text, str):
         return jsonify({
-            "error": "JSON body required"
+            "error": "Field 'prompt' must be a string."
         }), 400
 
-    prompt = data.get("prompt")
+    user_text = user_text.strip()
 
-    if not isinstance(prompt, str) or not prompt.strip():
+    if not user_text:
+
         return jsonify({
             "error": "Field 'prompt' is required."
         }), 400
 
-    try:
 
-        reply = send_message(prompt.strip())
+    result = send_message(user_text)
+
+
+    if result.get("ok"):
 
         return jsonify({
-            "response": reply
+            "response": result["response"]
         })
 
-    except Exception as e:
 
-        return jsonify({
-            "error": f"Stream failure: {str(e)}"
-        }), 500
+    return jsonify({
+        "error": result.get(
+            "error",
+            "Unknown error"
+        )
+    }), 500
 
+
+# ============================================================
+# HEADERS
+# ============================================================
+
+@app.route("/headers", methods=["POST"])
+def headers_endpoint():
+
+    data = request.get_json(silent=True) or {}
+
+    result = update_headers(data)
+
+    if "error" in result:
+
+        return jsonify(result), 400
+
+    return jsonify(result)
+
+
+# ============================================================
+# COOKIES
+# ============================================================
+
+@app.route("/cookies", methods=["POST"])
+def cookies_endpoint():
+
+    data = request.get_json(silent=True) or {}
+
+    result = update_cookies(data)
+
+    if "error" in result:
+
+        return jsonify(result), 400
+
+    return jsonify(result)
+
+
+# ============================================================
+# RUN
+# ============================================================
 
 if __name__ == "__main__":
 
-    port = int(os.environ.get("PORT", 5000))
+    port = int(
+        os.environ.get(
+            "PORT",
+            5000
+        )
+    )
 
     app.run(
         host="0.0.0.0",
