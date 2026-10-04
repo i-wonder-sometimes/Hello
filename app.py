@@ -208,12 +208,13 @@ def ask():
 
   try:
     response = requests.post(
-        url,
-        json=payload,
-        headers=req_headers,
-        stream=True,
-        proxies=proxy,
-        timeout=30,
+    url,
+    json=payload,
+    headers=req_headers,
+    stream=True,
+    proxies=get_proxies(),
+    timeout=30,
+    verify=False,
     )
 
     if response.status_code != 200:
